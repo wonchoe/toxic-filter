@@ -1,0 +1,10 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+node_modules
+tests
+*.ipynb
+data/
+checkpoints/
+*.md
