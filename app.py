@@ -100,3 +100,7 @@ def check_text(data: TextIn):
         return result
     except Exception as e:
         return {"error": str(e)}
+    
+@app.post("/check")
+def check_endpoint(data: TextIn):
+    return check_text(data)    
