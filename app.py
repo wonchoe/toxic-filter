@@ -5,6 +5,7 @@ import joblib
 import numpy as np
 import re
 from spellchecker import SpellChecker  # 🔧
+from better_profanity import profanity  # <--- додаємо
 
 # Клас моделі
 class ToxicClassifier(torch.nn.Module):
@@ -44,16 +45,16 @@ CUSTOM_TOXIC_WORDS = load_blacklist()
 
 def clean_text(text):
     text = text.lower()
-    text = re.sub(r'1', 'i', text)
-    text = re.sub(r'3', 'e', text)
-    text = re.sub(r'0', 'o', text)
-    text = re.sub(r'5', 's', text)
-    text = re.sub(r'@', 'a', text)
-    text = re.sub(r'\$', 's', text)
+    replacements = {
+        '1': 'i', '3': 'e', '0': 'o', '5': 's', '@': 'a', '$': 's', '!': 'i',
+        '|': 'i', '7': 't', '4': 'a', '8': 'b'
+    }
+    for src, tgt in replacements.items():
+        text = text.replace(src, tgt)
     text = re.sub(r'[^a-z\s]', '', text)
     words = text.split()
-    corrected = [spell.correction(w) or w for w in words]
-    return ' '.join(corrected)
+    #corrected = [spell.correction(w) or w for w in words]
+    return ' '.join(words)
 
 # FastAPI
 app = FastAPI()
@@ -61,15 +62,35 @@ app = FastAPI()
 class TextIn(BaseModel):
     text: str
 
+# Завантажуємо словник profanity лише один раз при старті
+profanity.load_censor_words()
+
 def check_text(data: TextIn):
     try:
         cleaned = clean_text(data.text)
+        # Лог — одразу перед return!
+        if profanity.contains_profanity(data.text) or profanity.contains_profanity(cleaned):
+            print(f"[PROFANITY FILTER] BLOCKED: '{data.text}' (cleaned: '{cleaned}')")
+            return {
+                'toxic': True,
+                'severe_toxicity': False,
+                'obscene': True,
+                'insult': True,
+                'threat': False,
+                'identity_attack': True,
+                'detected_by': 'profanity'
+            }
+
+        print("[DEBUG] CLEANED:", cleaned)
         vec = vectorizer.transform([cleaned]).toarray()
+        print("[DEBUG] VEC:", vec)
         x_tensor = torch.tensor(vec, dtype=torch.float32).to(DEVICE)
 
         with torch.no_grad():
             output = torch.sigmoid(model(x_tensor)).cpu().numpy()[0]
+            print("[DEBUG] AI OUTPUT:", output)
             result = {label: bool(score > 0.5) for label, score in zip(LABELS, output)}
+            print("[DEBUG] RESULT BEFORE BLACKLIST:", result)
 
             # -- BLACKLIST CHECK (word, phrase, substring, joined variant)
             tokens = cleaned.split()
@@ -77,30 +98,37 @@ def check_text(data: TextIn):
             lower_original = data.text.lower()
             lower_original_joined = ''.join(lower_original.split())
 
-            # 1. Перевіряє кожне слово
             if any(word in CUSTOM_TOXIC_WORDS for word in tokens):
+                print(f"[BLACKLIST] TOKEN MATCH: {tokens}")
                 result['toxic'] = True
                 result['identity_attack'] = True
-            # 2. Перевіряє всю фразу (почистили)
+                result['detected_by'] = 'blacklist_word'
             if cleaned in CUSTOM_TOXIC_WORDS or cleaned_joined in CUSTOM_TOXIC_WORDS:
+                print(f"[BLACKLIST] PHRASE MATCH: {cleaned}, {cleaned_joined}")
                 result['toxic'] = True
                 result['identity_attack'] = True
-            # 3. Перевіряє всю фразу як сабстрінг (навіть у середині)
+                result['detected_by'] = 'blacklist_phrase'
             if any(bad in cleaned for bad in CUSTOM_TOXIC_WORDS):
+                print(f"[BLACKLIST] SUBSTRING CLEANED: {cleaned}")
                 result['toxic'] = True
                 result['identity_attack'] = True
-            # 4. Перевіряє raw-text теж (на випадок обфускацій)
+                result['detected_by'] = 'blacklist_substr_cleaned'
             if any(bad in lower_original for bad in CUSTOM_TOXIC_WORDS):
+                print(f"[BLACKLIST] SUBSTRING RAW: {lower_original}")
                 result['toxic'] = True
                 result['identity_attack'] = True
+                result['detected_by'] = 'blacklist_substr_raw'
             if any(bad in lower_original_joined for bad in CUSTOM_TOXIC_WORDS):
+                print(f"[BLACKLIST] SUBSTRING JOINED RAW: {lower_original_joined}")
                 result['toxic'] = True
                 result['identity_attack'] = True
+                result['detected_by'] = 'blacklist_substr_joined_raw'
 
         return result
     except Exception as e:
         return {"error": str(e)}
+
     
 @app.post("/check")
 def check_endpoint(data: TextIn):
-    return check_text(data)    
+    return check_text(data)

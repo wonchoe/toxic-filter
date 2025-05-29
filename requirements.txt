@@ -8,3 +8,4 @@ psutil
 pyspellchecker
 --extra-index-url https://download.pytorch.org/whl/cpu
 numpy<2
+better-profanity>=0.7.0
