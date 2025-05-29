@@ -61,7 +61,6 @@ app = FastAPI()
 class TextIn(BaseModel):
     text: str
 
-@app.post("/check")
 def check_text(data: TextIn):
     try:
         cleaned = clean_text(data.text)
@@ -71,10 +70,33 @@ def check_text(data: TextIn):
         with torch.no_grad():
             output = torch.sigmoid(model(x_tensor)).cpu().numpy()[0]
             result = {label: bool(score > 0.5) for label, score in zip(LABELS, output)}
+
+            # -- BLACKLIST CHECK (word, phrase, substring, joined variant)
             tokens = cleaned.split()
+            cleaned_joined = ''.join(tokens)
+            lower_original = data.text.lower()
+            lower_original_joined = ''.join(lower_original.split())
+
+            # 1. Перевіряє кожне слово
             if any(word in CUSTOM_TOXIC_WORDS for word in tokens):
                 result['toxic'] = True
                 result['identity_attack'] = True
+            # 2. Перевіряє всю фразу (почистили)
+            if cleaned in CUSTOM_TOXIC_WORDS or cleaned_joined in CUSTOM_TOXIC_WORDS:
+                result['toxic'] = True
+                result['identity_attack'] = True
+            # 3. Перевіряє всю фразу як сабстрінг (навіть у середині)
+            if any(bad in cleaned for bad in CUSTOM_TOXIC_WORDS):
+                result['toxic'] = True
+                result['identity_attack'] = True
+            # 4. Перевіряє raw-text теж (на випадок обфускацій)
+            if any(bad in lower_original for bad in CUSTOM_TOXIC_WORDS):
+                result['toxic'] = True
+                result['identity_attack'] = True
+            if any(bad in lower_original_joined for bad in CUSTOM_TOXIC_WORDS):
+                result['toxic'] = True
+                result['identity_attack'] = True
+
         return result
     except Exception as e:
         return {"error": str(e)}
